@@ -21,6 +21,7 @@
 #include <glm/glm.hpp>                  // GLM header file
 #include <glm/gtc/quaternion.hpp>       // GLM quaternions
 #include <GL/glew.h>                    // GLEW header file
+#include <GLFW/glfw3.h>                 // GLFW header file
 
 // Include our own header files
 #include <common/objloader.hpp>
@@ -162,5 +163,10 @@ void DrawModel(const Model &model, GLuint program);
     Deletes the model's VAO/VBO (textures belong to the TextureCache).
 */
 void DeleteModel(Model *model);
+
+/*
+    View the object at the given path
+*/
+int ViewModel(GLFWwindow *window, const char *path);
 
 #endif
