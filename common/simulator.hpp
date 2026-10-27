@@ -12,6 +12,30 @@
 #ifndef SIMULATOR_HPP
 #define SIMULATOR_HPP
 
+// Include OpenGL related headers
+#include <glm/glm.hpp>                  // GLM header file
+
+// 
+enum Phase {
+    LINED_UP,
+    TAKEOFF_ROLL,
+    ROTATION,
+    CLIMB,
+};
+
+struct Aircraft {
+    // main wheel contact point, world space, meters
+    glm::vec3 position;
+    // m/s, along the nose
+    float speed;
+    // radians, nose up > 0 
+    float pitch;
+    // between 0 and 1
+    float throttle;
+    bool brakes;
+    Phase phase;
+};
+
 /*
     Run the simulation program.
 */

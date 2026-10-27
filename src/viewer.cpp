@@ -35,9 +35,8 @@ using namespace glm;
 #include <common/stb_image.h>           // image loading (implementation in stb_image.cpp)
 #include <common/shader.hpp>            // GLSL shader header file
 
-
-GLuint phongProgramID;          // GLSL program for the meshes (Phong shading)
-GLuint linesProgramID;          // GLSL program for the axes and light marker (unlit)
+//GLuint phongProgramID;          // GLSL program for the meshes (Phong shading)
+//GLuint linesProgramID;          // GLSL program for the axes and light marker (unlit)
 
 GLuint axesVertexArrayID;       // Vertex array object for the X/Y/Z axes
 GLuint axesVertexBuffer;        // Vertex buffer object for the X/Y/Z axes
@@ -86,19 +85,26 @@ bool wireframe = false;
 // --------------------------------------------------------------------------------
 
 // callbacks
+
+// todo: move framebufferSizeCallback to reusable namespace
+// keep all others in this source file because they are specific viewer controls
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
+
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 void cursorPosCallback(GLFWwindow* window, double xpos, double ypos);
 void scrollCallback(GLFWwindow* window, double xoffset, double yoffset);
 
-void processKeyboard(GLFWwindow *window, float deltaTime);
+static void processKeyboard(GLFWwindow *window, float deltaTime);
+
+// todo: move these to reusable namespace as well
 void rotateSelectedAroundWorldAxis(float angle, const vec3 &axis);
 void rotateSelectedAroundLocalAxis(float angle, const vec3 &axis);
 
-bool transferDataToGPUMemory(const vector<obj_t> &objects);
+bool transferDataToGPUMemory(const vector<obj_t> &objects, std::string &error);
 void cleanupDataFromGPU(void);
-void draw(void);
+
+static int draw(std::string& error);
 
 /*
     Model matrix M = T * R * S: applied right to left, a vertex is scaled first,
@@ -479,10 +485,15 @@ int ViewModel(GLFWwindow *window, const char *path) {
     }
     // push onto the vector
     objects.push_back(obj);
+    
+    std::string error;
 
     // transfer my data (shaders, axes, models, textures) to GPU side
-    if (!transferDataToGPUMemory(objects)) {
+    if (!transferDataToGPUMemory(objects, error)) {
         glfwTerminate();
+        if (!error.empty()) {
+            fprintf(stderr, "%s\n", error.c_str());
+        }
         return 1;
     }
 
@@ -502,6 +513,7 @@ int ViewModel(GLFWwindow *window, const char *path) {
         "  Esc               quit\n");
 
     double lastTime = glfwGetTime();
+    int drawResult;
 
     // render scene for each frame
     do {
@@ -515,7 +527,10 @@ int ViewModel(GLFWwindow *window, const char *path) {
         // keys held down
         processKeyboard(window, deltaTime);
         // drawing callback
-        draw();
+        drawResult = draw(error);
+        if (drawResult == -1) {
+            break;
+        }
         // Swap buffers
         glfwSwapBuffers(window);
 
@@ -528,6 +543,13 @@ int ViewModel(GLFWwindow *window, const char *path) {
 
     // Close OpenGL window and terminate GLFW
     glfwTerminate();
+
+    if (drawResult == -1 ){
+        if (!error.empty()) {
+            fprintf(stderr, "%s\n", error.c_str());
+        }
+        return 2;
+    }
 
     return 0;
 }
@@ -636,7 +658,7 @@ void rotateSelectedAroundLocalAxis(float angle, const vec3 &axis) {
 /*
     Keys that act while held down, polled once per frame.
 */
-void processKeyboard(GLFWwindow *window, float deltaTime) {
+static void processKeyboard(GLFWwindow *window, float deltaTime) {
     if (instances.empty()) {
         return;
     }
@@ -693,13 +715,11 @@ static void createLines(const GLfloat *positions, const GLfloat *colors, GLsizei
 /*
     Create shaders, VAOs and VBOs and transfer them to graphics card memory
 */
-bool transferDataToGPUMemory(const vector<obj_t> &objects)
+bool transferDataToGPUMemory(const vector<obj_t> &objects, std::string &error)
 {
     // Create and compile our GLSL programs from the shaders
-    phongProgramID = LoadShaders("shaders/phong.vs", "shaders/phong.fs");
-    linesProgramID = LoadShaders("shaders/lines.vs", "shaders/lines.fs");
-    if (phongProgramID == 0 || linesProgramID == 0) {
-        fprintf(stderr, "failed to load shaders\n");
+    bool ret = LoadShaders("shaders", error);
+    if (!ret) {
         return false;
     }
 
@@ -762,6 +782,9 @@ void cleanupDataFromGPU(void) {
     glDeleteBuffers(1, &lightColorBuffer);
     glDeleteVertexArrays(1, &lightVertexArrayID);
 
+    const GLuint phongProgramID = GetShader("phong");
+    const GLuint linesProgramID = GetShader("lines");
+
     glDeleteProgram(phongProgramID);
     glDeleteProgram(linesProgramID);
 }
@@ -770,7 +793,16 @@ void cleanupDataFromGPU(void) {
 /*
     Draw the scene in the graphics window
 */
-void draw(void) {
+static int draw(std::string& error) {
+
+    const GLuint phongProgramID = GetShader("phong");
+    const GLuint linesProgramID = GetShader("lines");
+    if (linesProgramID == 0 || phongProgramID == 0) {
+        error += "shader not found: ";
+        phongProgramID == 0 ? error += " phong " : " lines ";
+        return -1;
+    }
+
     // Clear the screen
     // not clearing the depth buffer can make back faces end up drawn over front ones and things will look inside out
     glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
@@ -831,6 +863,8 @@ void draw(void) {
 
     // unbind the VAO safely
     glBindVertexArray(0);
+
+    return 0;
 }
 
 // end of file
