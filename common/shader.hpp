@@ -26,4 +26,9 @@ bool LoadShaders(std::string dir_path, std::string& error);
 */
 GLuint GetShader(std::string name);
 
+/*
+    Get the shader registry.
+*/
+ShaderRegistry& GetShaders();
+
 #endif

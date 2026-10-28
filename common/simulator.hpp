@@ -39,6 +39,6 @@ struct Aircraft {
 /*
     Run the simulation program.
 */
-void RunSimulator(GLFWwindow *window);
+int RunSimulator(GLFWwindow *window);
 
 #endif

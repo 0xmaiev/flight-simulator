@@ -219,3 +219,10 @@ GLuint GetShader(const std::string name) {
     return 0; // Return 0 (OpenGL's null/invalid program handle)
 }
 
+/*
+    Get the shader registry.
+*/
+ShaderRegistry& GetShaders() {
+	return shaderRegistry;
+}
+

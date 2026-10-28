@@ -81,7 +81,7 @@ int main(int argc, char *argv[] )
     if (argc > 1) {
         // utility to help debug/load meshes
         // ./program /path/to/.obj
-        return RunModelViewer(window, argv[1]);
+        return RunViewer(window, argv[1]);
     } else {
         // run simulator by default
         RunSimulator(window);

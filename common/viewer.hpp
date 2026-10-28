@@ -24,6 +24,7 @@
 #include <GLFW/glfw3.h>                 // GLFW header file
 
 // Include our own header files
+#include <common/model.hpp>
 #include <common/objloader.hpp>
 
 /*
@@ -39,63 +40,16 @@
 #define FLOATS_PER_VERTEX       8
 
 // Module defaults
-static const GLint DEFAULT_FRAMEBUFFER_WIDTH = 800;
-static const GLint DEFAULT_FRAMEBUFFER_HEIGHT = 800;
+static const GLint DEFAULT_FRAMEBUFFER_WIDTH    = 800;
+static const GLint DEFAULT_FRAMEBUFFER_HEIGHT   = 800;
+static const GLfloat DEFAULT_AMBIENT_STRENGTH   = 0.15f;
 
-/*
-    Textures already uploaded to the GPU, keyed by their resolved file path,
-    so two materials (or two models) using the same image share one texture.
-    A value of 0 means loading failed - cached too, so we don't retry every model.
-*/
-typedef std::map<std::string, GLuint> TextureCache;
-
-
-/*
-    GPU side material, built from a `material_t` with defaults filled in.
-*/
-struct Material {
-    // Phong reflection coefficients
-    glm::vec3 ka        = glm::vec3(1.0f);
-    glm::vec3 kd        = glm::vec3(0.8f);
-    glm::vec3 ks        = glm::vec3(0.5f);
-    // Phong specular exponent
-    float shininess     = 32.0f;
-    // diffuse (base color) texture, 0 = none; owned by the TextureCache
-    GLuint diffuseTex   = 0;
-};
-
-/*
-    A range of consecutive vertices in a Model's VBO that share one material,
-    drawn with a single glDrawArrays call.
-*/
-struct Submesh {
-    // index of the first vertex (in vertices, not floats)
-    GLint first     = 0;
-    // number of vertices (3 per triangle)
-    GLsizei count   = 0;
-    // index into Model::materials
-    int material    = 0;
-};
-
-/*
-    Everything needed to draw one loaded .OBJ: built once from an `obj_t`,
-    after which the `obj_t` can be discarded.
-*/
-struct Model {
-    GLuint vao                          = 0;
-    GLuint vbo                          = 0;
-    // one per material actually used, in VBO order
-    std::vector<Submesh> submeshes;
-    // [0] is a default material for faces without `usemtl`,
-    // [i + 1] is converted from obj_t::mats[i]
-    std::vector<Material> materials;
-    // axis-aligned bounding box of the positions
-    glm::vec3 bbox_min                  = glm::vec3(0.0f);
-    glm::vec3 bbox_max                  = glm::vec3(0.0f);
-    // centers the model on the origin and scales its longest half-extent to 1,
-    // so any downloaded model shows up at a sensible size
-    glm::mat4 fit                       = glm::mat4(1.0f);
-};
+// Exposed defaults
+const float KEY_MOVE_SPEED      = 1.5f;     // world units per second
+const float KEY_ROTATE_SPEED    = 1.5f;     // radians per second
+const float MOUSE_ROTATE_SPEED  = 0.01f;    // radians per pixel
+const float MOUSE_MOVE_SPEED    = 0.005f;   // world units per pixel
+const float SCROLL_MOVE_SPEED   = 0.2f;     // world units per scroll step
 
 /*
     One placement of a Model in the scene - what the mouse/keyboard move.
@@ -113,9 +67,15 @@ struct Instance {
     Instance(size_t m): model(m) {}
 
     /*
-        Model matrix M = T * R * S: scale first, then rotate, then translate.
+        Model matrix M = T * R * S: applied right to left, a vertex is scaled first,
+        then rotated around the origin, then translated to `position`.
     */
-    glm::mat4 ModelMatrix() const;
+    glm::mat4 ModelMatrix() const {
+        glm::mat4 T = glm::translate(glm::mat4(1.0f), position);
+        glm::mat4 R = glm::mat4_cast(orientation);
+        glm::mat4 S = glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+        return T * R * S;
+    }
 };
 
 // Instances of models loaded, each model can have more than one instance. 
@@ -125,7 +85,8 @@ typedef std::vector<Instance> Instances;
 typedef std::vector<Model> Models;
 
 /*
-    The contents of a scene, it's object instances and selected object.
+    The contents of a scene, it's object models, textures and instances.
+    This is pretty much all that is shared between viewer and simulator.
 */
 struct Scene {
     // loaded models, can have more than one instance each
@@ -136,6 +97,15 @@ struct Scene {
     TextureCache textures;
 };
 
+/*
+    Point light in world space.
+*/
+struct PointLight {
+    glm::vec3 position      = glm::vec3(0.8f, 1.0f, 1.5f);
+    glm::vec3 color         = glm::vec3(1.0f, 1.0f, 1.0f);
+    float ambient_strength  = DEFAULT_AMBIENT_STRENGTH;
+    glm::vec3 attenuation   = glm::vec3(1.0f, 0.05f, 0.01f);
+};
 
 /*
     Where we look from, each mode moves in it's own way.
@@ -159,36 +129,8 @@ struct Viewport {
 };
 
 /*
-    Attempts loading an image file into a GL texture, using the cache.
-    Returns 0 if it can't be loaded.
-*/
-GLuint LoadTexture(const std::string &path, TextureCache *cache);
-
-/*
-    Deletes every texture in the cache and empties it.
-*/
-void DeleteTextures(TextureCache *cache);
-
-/*
-    Attempts building the required OpenGL buffers to render the given .OBJ.
-*/
-Model BuildModel(const obj_t &object, TextureCache *textures);
-
-/*
-    Draws every submesh of the model with the given (already bound) program.
-    The program's model/view/projection/light uniforms must be set by the caller;
-    this only sets the per-material ones.
-*/
-void DrawModel(const Model &model, GLuint program);
-
-/*
-    Deletes the model's VAO/VBO (textures belong to the TextureCache).
-*/
-void DeleteModel(Model *model);
-
-/*
     Run the .OBJ model viewer.
 */
-int RunModelViewer(GLFWwindow *window, const char *path);
+int RunViewer(GLFWwindow *window, const char *path);
 
 #endif
