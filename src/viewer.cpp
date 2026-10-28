@@ -34,9 +34,7 @@ using namespace glm;
 #include <common/viewer.hpp>            // very tiny OBJ viewer header file
 #include <common/stb_image.h>           // image loading (implementation in stb_image.cpp)
 #include <common/shader.hpp>            // GLSL shader header file
-
-//GLuint phongProgramID;          // GLSL program for the meshes (Phong shading)
-//GLuint linesProgramID;          // GLSL program for the axes and light marker (unlit)
+#include <common/helpers.hpp>           // reusable helpers between OBJ viewer and simulator
 
 GLuint axesVertexArrayID;       // Vertex array object for the X/Y/Z axes
 GLuint axesVertexBuffer;        // Vertex buffer object for the X/Y/Z axes
@@ -45,19 +43,6 @@ GLuint axesColorBuffer;         // color buffer object (CBO)
 GLuint lightVertexArrayID;      // Vertex array object for the light marker
 GLuint lightVertexBuffer;       // Vertex buffer object for the light marker
 GLuint lightColorBuffer;        // color buffer object (CBO)
-
-GLint framebufferWidth = 800;   // in pixels; differs from the window size on HiDPI screens
-GLint framebufferHeight = 800;
-
-// Scene: models are the GPU data, instances are placements of them that the user moves
-vector<Model> models;
-vector<Instance> instances;
-TextureCache textures;
-size_t selected = 0;            // the instance that mouse/keyboard input moves
-
-// Camera: fixed, slightly above the scene, looking at the origin
-const vec3 cameraPosition(0.0f, 1.2f, 4.0f);
-const vec3 cameraTarget(0.0f, 0.0f, 0.0f);
 
 // Point light, in world space
 const vec3 lightPosition(0.8f, 1.0f, 1.5f);
@@ -72,11 +57,23 @@ const float mouseRotateSpeed = 0.01f;   // radians per pixel
 const float mouseMoveSpeed = 0.005f;    // world units per pixel
 const float scrollMoveSpeed = 0.2f;     // world units per scroll step
 
-bool rotating = false;          // left mouse button held
-bool panning = false;           // right mouse button held
-double lastCursorX = 0.0;
-double lastCursorY = 0.0;
-bool wireframe = false;
+struct ViewerState {
+    Viewport* viewport;
+    Camera* camera;
+    Scene* scene;
+    size_t selected     = 0;        // only the viewer has a selected instance
+    bool rotating       = false;    // left mouse button held
+    bool panning        = false;    // right mouse button held
+    bool wireframe      = false;
+    double lastCursorX  = 0.0;
+    double lastCursorY  = 0.0;
+
+    ViewerState(Viewport* vp, Camera* camera, Scene* scene): 
+        viewport(viewport),
+        camera(camera),
+        scene(scene)
+    {};
+};
 
 // --------------------------------------------------------------------------------
 /*
@@ -94,17 +91,12 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 void cursorPosCallback(GLFWwindow* window, double xpos, double ypos);
 void scrollCallback(GLFWwindow* window, double xoffset, double yoffset);
-
 static void processKeyboard(GLFWwindow *window, float deltaTime);
 
-// todo: move these to reusable namespace as well
-void rotateSelectedAroundWorldAxis(float angle, const vec3 &axis);
-void rotateSelectedAroundLocalAxis(float angle, const vec3 &axis);
+bool transferDataToGPUMemory(ViewerState& state, const vector<obj_t> &objects, std::string &error);
+void cleanupDataFromGPU(ViewerState& state);
 
-bool transferDataToGPUMemory(const vector<obj_t> &objects, std::string &error);
-void cleanupDataFromGPU(void);
-
-static int draw(std::string& error);
+static int draw(ViewerState& state, std::string& error);
 
 /*
     Model matrix M = T * R * S: applied right to left, a vertex is scaled first,
@@ -439,9 +431,7 @@ void DeleteModel(Model *model) {
 /*
     View the object at the given path
 */
-int ViewModel(GLFWwindow *window, const char *path) {
-    // Create window context
-    glfwMakeContextCurrent(window);
+int RunModelViewer(GLFWwindow* window, const char *path) {
 
     // set callbacks: resizing, and the GLFW mouse/keyboard input
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
@@ -449,24 +439,8 @@ int ViewModel(GLFWwindow *window, const char *path) {
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
     glfwSetCursorPosCallback(window, cursorPosCallback);
     glfwSetScrollCallback(window, scrollCallback);
-
-    // the framebuffer can be bigger than the window (HiDPI), so ask for its real size
-    glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    glViewport(0, 0, framebufferWidth, framebufferHeight);
-
-    // Initialize GLEW
-    glewExperimental = GL_TRUE; // Needed for core profile and other modern features
-    GLenum err = glewInit();
-    if (GLEW_OK != err) {
-        fprintf(stderr, "failed to initialize glew\n");
-        return 1;
-    };
-
     // Ensure we can capture the escape key being pressed below
     glfwSetInputMode(window, GLFW_STICKY_KEYS, GL_TRUE);
-
-    // enable depth testing
-    glEnable(GL_DEPTH_TEST);
 
     // Blue background
     glClearColor(0.0f, 0.0f, 0.15f, 0.0f);
@@ -487,9 +461,16 @@ int ViewModel(GLFWwindow *window, const char *path) {
     objects.push_back(obj);
     
     std::string error;
+    
+    Scene scene;
+    Camera camera;
+    Viewport viewport;
+    ViewerState state { &viewport, &camera, &scene };
+
+    glfwSetWindowUserPointer(window, &state);
 
     // transfer my data (shaders, axes, models, textures) to GPU side
-    if (!transferDataToGPUMemory(objects, error)) {
+    if (!transferDataToGPUMemory(state, objects, error)) {
         glfwTerminate();
         if (!error.empty()) {
             fprintf(stderr, "%s\n", error.c_str());
@@ -499,6 +480,10 @@ int ViewModel(GLFWwindow *window, const char *path) {
 
     // the GPU has its own copy now: the parsed .OBJ data can be freed
     objects.clear();
+    
+    // the framebuffer can be bigger than the window (HiDPI), so ask for its real size
+    glfwGetFramebufferSize(window, &viewport.framebuffer_width, &viewport.framebuffer_height);
+    glViewport(0, 0, viewport.framebuffer_width, viewport.framebuffer_height);
 
     fprintf(stdout,
         "\ncontrols:\n"
@@ -527,7 +512,7 @@ int ViewModel(GLFWwindow *window, const char *path) {
         // keys held down
         processKeyboard(window, deltaTime);
         // drawing callback
-        drawResult = draw(error);
+        drawResult = draw(state, error);
         if (drawResult == -1) {
             break;
         }
@@ -539,7 +524,7 @@ int ViewModel(GLFWwindow *window, const char *path) {
           glfwWindowShouldClose(window) == GL_FALSE );
 
     // Cleanup VAO, VBOs, and shaders from GPU
-    cleanupDataFromGPU();
+    cleanupDataFromGPU(state);
 
     // Close OpenGL window and terminate GLFW
     glfwTerminate();
@@ -561,10 +546,14 @@ int ViewModel(GLFWwindow *window, const char *path) {
 */
 
 void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
+    // get window attached context and perform null check
+    ViewerState* c = static_cast<ViewerState*>(glfwGetWindowUserPointer(window));
+    if (c == nullptr) return;
+
     // remembered so the projection's aspect ratio follows the window (see draw)
-    framebufferWidth = width;
-    framebufferHeight = height;
+    c->viewport->framebuffer_height = height;
+    c->viewport->framebuffer_width = width;
+    glViewport(0, 0, width, height);
 }
 
 /*
@@ -572,6 +561,13 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
     are polled every frame in processKeyboard instead.
 */
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    // get window attached context and perform null check
+    ViewerState* state = static_cast<ViewerState*>(glfwGetWindowUserPointer(window));
+    if (state == nullptr) return;
+    
+    Instances& instances = state->scene->instances;
+    size_t& selected = state->selected;
+
     if (action != GLFW_PRESS || instances.empty()) {
         return;
     }
@@ -585,44 +581,65 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
             break;
         }
         case GLFW_KEY_F:
-            wireframe = !wireframe;
+            state->wireframe = !state->wireframe;
             break;
     }
 }
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+    // get window attached context and perform null check
+    ViewerState* state = static_cast<ViewerState*>(glfwGetWindowUserPointer(window));
+    if (state == nullptr) return;
+
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        rotating = (action == GLFW_PRESS);
+        state->rotating = (action == GLFW_PRESS);
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-        panning = (action == GLFW_PRESS);
+        state->panning = (action == GLFW_PRESS);
     }
+
     // start measuring the drag from where the button was pressed
-    glfwGetCursorPos(window, &lastCursorX, &lastCursorY);
+    glfwGetCursorPos(window, &state->lastCursorX, &state->lastCursorY);
 }
 
 void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
+    // get window attached context and perform null check
+    ViewerState* state = static_cast<ViewerState*>(glfwGetWindowUserPointer(window));
+    if (state == nullptr) return;
+
     // cursor movement since the last event, in pixels (y grows downwards)
-    float dx = (float)(xpos - lastCursorX);
-    float dy = (float)(ypos - lastCursorY);
-    lastCursorX = xpos;
-    lastCursorY = ypos;
+    float dx = (float)(xpos - state->lastCursorX);
+    float dy = (float)(ypos - state->lastCursorY);
+    state->lastCursorX = xpos;
+    state->lastCursorY = ypos;
+
+    Instances& instances = state->scene->instances;
+    size_t& selected = state->selected;
 
     if (instances.empty()) {
         return;
     }
 
-    if (rotating) {
+    if (state->rotating) {
         // horizontal drag spins around the vertical axis, vertical drag tips it forwards/backwards
-        rotateSelectedAroundWorldAxis(dx * mouseRotateSpeed, vec3(0.0f, 1.0f, 0.0f));
-        rotateSelectedAroundWorldAxis(dy * mouseRotateSpeed, vec3(1.0f, 0.0f, 0.0f));
+        RotateSelectedAroundWorldAxis(instances, selected,
+            dx * mouseRotateSpeed, vec3(0.0f, 1.0f, 0.0f));
+        RotateSelectedAroundWorldAxis(instances, selected,
+            dy * mouseRotateSpeed, vec3(1.0f, 0.0f, 0.0f));
     }
-    if (panning) {
+    if (state->panning) {
         instances[selected].position.x += dx * mouseMoveSpeed;
         instances[selected].position.y -= dy * mouseMoveSpeed;
     }
 }
 
 void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
+    // get window attached context and perform null check
+    ViewerState* state = static_cast<ViewerState*>(glfwGetWindowUserPointer(window));
+    if (state == nullptr) return;
+    
+    Instances& instances = state->scene->instances;
+    size_t& selected = state->selected;
+
     if (instances.empty()) {
         return;
     }
@@ -630,35 +647,17 @@ void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
     instances[selected].position.z += (float)yoffset * scrollMoveSpeed;
 }
 
-// --------------------------------------------------------------------------------
-/*
-    Rotates the selected instance around a *world* axis.
-
-    Multiplying the new rotation on the left applies it after the existing one,
-    i.e. around the fixed world axes, so dragging right always spins the object
-    the same way on screen no matter how it's already rotated.
-*/
-void rotateSelectedAroundWorldAxis(float angle, const vec3 &axis) {
-    Instance &instance = instances[selected];
-    instance.orientation = normalize(angleAxis(angle, axis) * instance.orientation);
-}
-/*
-    Rotates the selected instance around a *local* axis.
-
-    Multiplying the new rotation on the right applies it before the existing one,
-    i.e. around the object's own, already rotated axes. This allows mimicking real flight 
-    dynamics where pulling back on the stick pitches the nose "up" relative to the 
-    pilot, regardless of whether the aircraft is inverted or banked.
-*/
-void rotateSelectedAroundLocalAxis(float angle, const vec3 &axis) {
-    Instance &instance = instances[selected];
-    instance.orientation = normalize(instance.orientation * angleAxis(angle, axis));
-}
-
 /*
     Keys that act while held down, polled once per frame.
 */
 static void processKeyboard(GLFWwindow *window, float deltaTime) {
+    // get window attached context and perform null check
+    ViewerState* state = static_cast<ViewerState*>(glfwGetWindowUserPointer(window));
+    if (state == nullptr) return;
+    
+    Instances& instances = state->scene->instances;
+    size_t& selected = state->selected;
+
     if (instances.empty()) {
         return;
     }
@@ -676,12 +675,18 @@ static void processKeyboard(GLFWwindow *window, float deltaTime) {
     if (glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS)   instance.position.z += move;
 
     // rotate
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) rotateSelectedAroundWorldAxis(-turn, vec3(0.0f, 1.0f, 0.0f));
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) rotateSelectedAroundWorldAxis( turn, vec3(0.0f, 1.0f, 0.0f));
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) rotateSelectedAroundWorldAxis(-turn, vec3(1.0f, 0.0f, 0.0f));
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) rotateSelectedAroundWorldAxis( turn, vec3(1.0f, 0.0f, 0.0f));
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) rotateSelectedAroundWorldAxis( turn, vec3(0.0f, 0.0f, 1.0f));
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) rotateSelectedAroundWorldAxis(-turn, vec3(0.0f, 0.0f, 1.0f));
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        RotateSelectedAroundWorldAxis(instances, selected, -turn, vec3(0.0f, 1.0f, 0.0f));
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        RotateSelectedAroundWorldAxis(instances, selected, turn, vec3(0.0f, 1.0f, 0.0f));
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        RotateSelectedAroundWorldAxis(instances, selected, -turn, vec3(1.0f, 0.0f, 0.0f));
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        RotateSelectedAroundWorldAxis(instances, selected,  turn, vec3(1.0f, 0.0f, 0.0f));
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+        RotateSelectedAroundWorldAxis(instances, selected,  turn, vec3(0.0f, 0.0f, 1.0f));
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+        RotateSelectedAroundWorldAxis(instances, selected, -turn, vec3(0.0f, 0.0f, 1.0f));
 }
 
 // --------------------------------------------------------------------------------
@@ -715,7 +720,7 @@ static void createLines(const GLfloat *positions, const GLfloat *colors, GLsizei
 /*
     Create shaders, VAOs and VBOs and transfer them to graphics card memory
 */
-bool transferDataToGPUMemory(const vector<obj_t> &objects, std::string &error)
+bool transferDataToGPUMemory(ViewerState& state, const vector<obj_t> &objects, std::string &error)
 {
     // Create and compile our GLSL programs from the shaders
     bool ret = LoadShaders("shaders", error);
@@ -750,6 +755,10 @@ bool transferDataToGPUMemory(const vector<obj_t> &objects, std::string &error)
     };
     createLines(g_light_buffer_data, g_light_color_data, sizeof(g_light_buffer_data),
                 &lightVertexArrayID, &lightVertexBuffer, &lightColorBuffer);
+                
+    Models& models = state.scene->models;
+    Instances& instances = state.scene->instances;
+    TextureCache& textures = state.scene->textures;
 
     // then we convert from `obj_t` to `Model`s (shared textures go through the cache)
     for (size_t i = 0; i < objects.size(); i++) {
@@ -769,7 +778,10 @@ bool transferDataToGPUMemory(const vector<obj_t> &objects, std::string &error)
 /*
     Remove VBOs, VAOs, textures and shaders from graphics card memory
 */
-void cleanupDataFromGPU(void) {
+void cleanupDataFromGPU(ViewerState& state) {
+    Models& models = state.scene->models;
+    TextureCache& textures = state.scene->textures;
+
     for (size_t i = 0; i < models.size(); i++) {
         DeleteModel(&models[i]);
     }
@@ -793,8 +805,7 @@ void cleanupDataFromGPU(void) {
 /*
     Draw the scene in the graphics window
 */
-static int draw(std::string& error) {
-
+static int draw(ViewerState& state, std::string& error) {
     const GLuint phongProgramID = GetShader("phong");
     const GLuint linesProgramID = GetShader("lines");
     if (linesProgramID == 0 || phongProgramID == 0) {
@@ -803,14 +814,19 @@ static int draw(std::string& error) {
         return -1;
     }
 
+    Scene* scene = state.scene;
+    Viewport* viewport = state.viewport;
+    Camera* camera = state.camera;
+
     // Clear the screen
     // not clearing the depth buffer can make back faces end up drawn over front ones and things will look inside out
     glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
 
     // camera: projection uses the current aspect ratio, so resizing doesn't stretch the scene
-    float aspect = framebufferHeight > 0 ? (float)framebufferWidth / (float)framebufferHeight : 1.0f;
+    float aspect = viewport->framebuffer_height > 0 ?
+        (float)viewport->framebuffer_width /(float)viewport->framebuffer_height : 1.0f;
     mat4 projection = perspective(radians(45.0f), aspect, 0.1f, 100.0f);
-    mat4 view = lookAt(cameraPosition, cameraTarget, vec3(0.0f, 1.0f, 0.0f));
+    mat4 view = lookAt(camera->position, camera->target, vec3(0.0f, 1.0f, 0.0f));
 
     // --- unlit lines: axes and light marker ---
     glUseProgram(linesProgramID);
@@ -838,16 +854,16 @@ static int draw(std::string& error) {
     glUniform3fv(glGetUniformLocation(phongProgramID, "lightColor"), 1, value_ptr(lightColor));
     glUniform1f(glGetUniformLocation(phongProgramID, "ambientStrength"), ambientStrength);
     glUniform3fv(glGetUniformLocation(phongProgramID, "lightAttenuation"), 1, value_ptr(lightAttenuation));
-    glUniform3fv(glGetUniformLocation(phongProgramID, "viewPosition"), 1, value_ptr(cameraPosition));
+    glUniform3fv(glGetUniformLocation(phongProgramID, "viewPosition"), 1, value_ptr(camera->position));
 
     GLint modelLoc = glGetUniformLocation(phongProgramID, "model");
     GLint normalMatrixLoc = glGetUniformLocation(phongProgramID, "normalMatrix");
 
-    glPolygonMode(GL_FRONT_AND_BACK, wireframe ? GL_LINE : GL_FILL);
+    glPolygonMode(GL_FRONT_AND_BACK, state.wireframe ? GL_LINE : GL_FILL);
 
-    for (size_t i = 0; i < instances.size(); i++) {
-        const Instance &instance = instances[i];
-        const Model &model = models[instance.model];
+    for (size_t i = 0; i < scene->instances.size(); i++) {
+        const Instance &instance = scene->instances[i];
+        const Model &model = scene->models[instance.model];
 
         // fit first (center + normalize size), then the user's scale/rotation/translation
         mat4 modelMatrix = instance.ModelMatrix() * model.fit;

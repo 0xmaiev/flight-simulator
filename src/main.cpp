@@ -32,9 +32,9 @@ using namespace glm;
 #include <common/simulator.hpp>         // very tiny simulator header file
 #include <common/shader.hpp>            // GLSL shader header file
 
-GLint windowWidth = 800;
-GLint windowHeight = 800;
-GLFWwindow* window;             // graphics window of this program
+// Global constants
+const GLint WINDOW_WIDTH = 800;
+const GLint WINDOW_HEIGHT = 800;
 
 //--------------------------------------------------------------------------------
 
@@ -51,25 +51,40 @@ int main(int argc, char *argv[] )
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // To make MacOS happy; should not be needed
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    // enable depth testing
+    glEnable(GL_DEPTH_TEST);
 
     const char *windowName = argc > 1 ? "Mesh Renderer" : "Flight Simulator";
     // Open a window
-    window = glfwCreateWindow(windowWidth, windowHeight, windowName, NULL, NULL);
-
-    // if we got arguments check which
-    if (argc > 1) {
-        // utility to help debug/load meshes
-        // ./program view /path/to/.obj
-        return ViewModel(window, argv[1]);
-    } else {
-        // run simulator by default
-        RunSimulator(window);
-    }
+    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
+        windowName, NULL, NULL);
 
     if (!window) {
         fprintf(stderr, "failed to create opengl window\n");
         glfwTerminate();
         return 1;
+    }
+
+    // Create window context
+    glfwMakeContextCurrent(window);
+
+    // Initialize GLEW
+    glewExperimental = GL_TRUE; // Needed for core profile and other modern features
+    GLenum err = glewInit();
+    if (GLEW_OK != err) {
+        fprintf(stderr, "failed to initialize glew\n");
+        return 1;
+    };
+    
+
+    // if we got arguments check which
+    if (argc > 1) {
+        // utility to help debug/load meshes
+        // ./program /path/to/.obj
+        return RunModelViewer(window, argv[1]);
+    } else {
+        // run simulator by default
+        RunSimulator(window);
     }
 
     return 0;
