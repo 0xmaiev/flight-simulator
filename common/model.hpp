@@ -10,6 +10,18 @@
 #include <common/objloader.hpp>
 
 /*
+    Layout of one vertex inside a Model's VBO (interleaved):
+
+        | position (3 floats) | normal (3 floats) | uv (2 floats) |
+
+    The shader's `layout(location = N)` must match these attribute numbers.
+*/
+#define VERTEX_ATTRIB_POSITION  0
+#define VERTEX_ATTRIB_NORMAL    1
+#define VERTEX_ATTRIB_UV        2
+#define FLOATS_PER_VERTEX       8
+
+/*
     Textures already uploaded to the GPU, keyed by their resolved file path,
     so two materials (or two models) using the same image share one texture.
     A value of 0 means loading failed - cached too, so we don't retry every model.
@@ -43,7 +55,6 @@ struct Submesh {
     int material    = 0;
 };
 
-
 /*
     Everything needed to draw one loaded .OBJ: built once from an `obj_t`,
     after which the `obj_t` can be discarded.
@@ -64,6 +75,8 @@ struct Model {
     glm::mat4 fit                       = glm::mat4(1.0f);
 };
 
+// Models loaded into GPU and ready to be rendered.
+typedef std::vector<Model> Models;
 
 /*
     Attempts loading an image file into a GL texture, using the cache.

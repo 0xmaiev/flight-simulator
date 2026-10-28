@@ -2,7 +2,7 @@
 #ifndef HELPERS_HPP
 #define HELPERS_HPP
 
-#include <common/viewer.hpp>
+#include <common/scene.hpp>
 
 /*
     Rotates the selected instance around a *world* axis.

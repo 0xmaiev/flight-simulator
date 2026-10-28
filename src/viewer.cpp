@@ -32,6 +32,7 @@ using namespace glm;
 // Our own header files
 #include <common/objloader.hpp>         // very tiny OBJ loader header file
 #include <common/model.hpp>             // very tiny OBJ model header file
+#include <common/scene.hpp>
 #include <common/viewer.hpp>            // very tiny OBJ viewer header file
 #include <common/stb_image.h>           // image loading (implementation in stb_image.cpp)
 #include <common/shader.hpp>            // GLSL shader header file

@@ -9,7 +9,7 @@ using namespace std;
 using namespace glm; // `normalize` usage
 
 // Our own header files
-#include <common/viewer.hpp>
+#include <common/scene.hpp>
 
 /*
     Rotates the selected instance around a *world* axis.
