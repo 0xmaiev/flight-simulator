@@ -27,14 +27,6 @@
 #include <common/model.hpp>
 #include <common/objloader.hpp>
 
-
-// Exposed defaults
-const float KEY_MOVE_SPEED      = 1.5f;     // world units per second
-const float KEY_ROTATE_SPEED    = 1.5f;     // radians per second
-const float MOUSE_ROTATE_SPEED  = 0.01f;    // radians per pixel
-const float MOUSE_MOVE_SPEED    = 0.005f;   // world units per pixel
-const float SCROLL_MOVE_SPEED   = 0.2f;     // world units per scroll step
-
 /*
     Run the .OBJ model viewer.
 */

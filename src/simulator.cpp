@@ -2,6 +2,7 @@
     An attempt at a very tiny flight simulator.
 
     Source material used as reference:
+    https://www.jakobmaier.at/posts/flight-simulation/
 
     Author: Hugo Carvalho <a36295@ubi.pt>
     Email: hugo.carvalho@ubi.pt
@@ -26,6 +27,7 @@ using namespace std;
 using namespace glm;
 
 // Our own header files
+#include <common/aircraft.hpp>         // very tiny aircraft header file
 #include <common/simulator.hpp>         // very tiny simulator header file
 #include <common/model.hpp>             // very tiny OBJ model header file
 #include <common/scene.hpp>             // very tiny scene header file
@@ -39,10 +41,17 @@ struct SimulatorState {
     Scene* scene;
     PointLight* light;
     Aircraft* aircraft;
-    bool rotating       = false;    // left mouse button held
-    bool panning        = false;    // right mouse button held
-    double lastCursorX  = 0.0;
-    double lastCursorY  = 0.0;
+
+    bool automaticTakeOff   = false;    // automatic takeoff procedure
+
+    bool orbiting           = false;    // left mouse button held
+    
+    double lastCursorX      = 0.0;
+    double lastCursorY      = 0.0;
+
+    double cameraYaw        = 0.0;      // horizontal / x
+    double cameraPitch      = 0.1;      // vertical / y - initially slightly above plane
+    double cameraDistance   = 15.0;     // distance / z - initially behind plane
 
     SimulatorState(Viewport* vp, Camera* camera, Scene* scene,
         PointLight* light, Aircraft* aircraft): 
@@ -53,6 +62,33 @@ struct SimulatorState {
         aircraft(aircraft)
     {};
 };
+
+enum {
+    RUNWAY,
+    AIRCRAFT,
+    PARKED_AIRCRAFT
+};
+
+// scene
+static const glm::vec3 AIRCRAFT_START_POSITION = vec3(0.0f, 0.0f, -1230.0f);
+
+// controls
+static const float KEY_MOVE_SPEED           = 1.5f;     // world units per second
+static const float KEY_ROTATE_SPEED         = 1.5f;     // radians per second
+static const float MOUSE_ROTATE_SPEED       = 1.0f;     // radians per pixel
+static const float MOUSE_MOVE_SPEED         = 0.005f;   // world units per pixel
+static const float SCROLL_MOVE_SPEED        = 0.2f;     // world units per scroll step
+
+// aircraft
+static const float MAX_THROTTLE             = 1.0f;
+static const float THROTTLE_DELTA           = 0.5f;
+static const float DEFAULT_THROTTLE         = 0.0f;
+static const float ELEVATOR_DELTA           = 1.0f;
+static const float DEFAULT_ELEVATOR         = 0.0f;
+
+// camera pitch
+static const double MIN_CAMERA_PITCH        = 0.01f;    // radians
+static const double MAX_CAMERA_PITCH        = 1.45f;    // radians
 
 
 // --------------------------------------------------------------------------------
@@ -75,6 +111,7 @@ static bool transferDataToGPUMemory(SimulatorState& state, const vector<obj_t>& 
 static void cleanupDataFromGPU(SimulatorState& state);
 
 static void processKeyboard(GLFWwindow *window, float deltaTime);
+void updateScene(SimulatorState& state);
 static int draw(SimulatorState& state, std::string& error);
 
 
@@ -111,11 +148,22 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
     if (action != GLFW_PRESS) return;
 
     switch (key) {
+        case GLFW_KEY_B: {
+            aircraft->brakes = !aircraft->brakes;
+            fprintf(stdout, "aircraft brakes: %s\n", aircraft->brakes ? "true" : "false");
+            break;
+        }
         case GLFW_KEY_R: {
             // reset the aircraft position to the starting point placement
-            //Instance &instance = instances[selected];
-            //instance.position = vec3(0.0f);
-            //instance.orientation = quat(1.0f, 0.0f, 0.0f, 0.0f);
+            *aircraft = Aircraft();
+            aircraft->position = AIRCRAFT_START_POSITION;
+            break;
+        }
+        case GLFW_KEY_T: {
+            // automatic take off
+            state->automaticTakeOff = !state->automaticTakeOff;
+            fprintf(stdout, "automatic takeoff procedure: %s\n",
+                state->automaticTakeOff ? "true" : "false");
             break;
         }
     }
@@ -127,9 +175,7 @@ static void mouseButtonCallback(GLFWwindow* window, int button, int action, int 
     if (state == nullptr) return;
 
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        state->rotating = (action == GLFW_PRESS);
-    } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-        state->panning = (action == GLFW_PRESS);
+        state->orbiting = (action == GLFW_PRESS);
     }
 
     // start measuring the drag from where the button was pressed
@@ -148,19 +194,18 @@ static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
     state->lastCursorY = ypos;
 
     Aircraft* aircarft = state->aircraft;
-    if (aircarft == nullptr) return;
+    Camera* camera = state->camera;
+    if (aircarft == nullptr || camera == nullptr) return;
 
-    if (state->rotating) {
+    if (state->orbiting) {
         // horizontal drag spins the CAMERA around the AIRCRAFT's vertical axis,
         // vertical drag tips it forwards/backwards, not the AIRCRAFT itself
-        //RotateSelectedAroundLocalAxis(instances, selected,
-        //    dx * MOUSE_ROTATE_SPEED, vec3(0.0f, 1.0f, 0.0f));
-        //RotateSelectedAroundLocalAxis(instances, selected,
-        //    dy * MOUSE_ROTATE_SPEED, vec3(1.0f, 0.0f, 0.0f));
-    }
-    if (state->panning) {
-        //instances[selected].position.x += dx * MOUSE_MOVE_SPEED;
-        //instances[selected].position.y -= dy * MOUSE_MOVE_SPEED;
+        state->cameraYaw += glm::radians(dx * MOUSE_ROTATE_SPEED);
+        state->cameraPitch += glm::radians(dy * MOUSE_ROTATE_SPEED);
+        // not clamping the pitch makes the camera flip at the extremes
+        state->cameraPitch = glm::clamp(state->cameraPitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH);
+        //fprintf(stdout, "camera offset angle: x %f y %f\n",
+        //    state->cameraYaw, state->cameraPitch);
     }
 }
 
@@ -171,14 +216,12 @@ static void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
 
     Aircraft* aircraft = state->aircraft;
     Camera* camera = state->camera;
-
     if (camera == nullptr || aircraft == nullptr) return;
 
     // The camera position is relative to the aircraft so instead of changing
     // the aircraft position directly we change the camera position
-
-    // scrolling up brings the aircraft closer (+Z points towards the camera)
-    camera->position.z += (float)yoffset * SCROLL_MOVE_SPEED;
+    state->cameraDistance += (float)yoffset * SCROLL_MOVE_SPEED;
+    state->cameraDistance = glm::clamp(state->cameraDistance, 5.0, 100.0);
 }
 
 /*
@@ -190,33 +233,26 @@ static void processKeyboard(GLFWwindow *window, float deltaTime) {
     if (state == nullptr) return;
     
     Aircraft* aircraft = state->aircraft;
-    
     if (aircraft == nullptr) return;
 
-    float move = KEY_MOVE_SPEED* deltaTime;
-    float turn = KEY_ROTATE_SPEED * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS)
+        aircraft->throttle += THROTTLE_DELTA * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS)
+        aircraft->throttle -= THROTTLE_DELTA * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+        aircraft->throttle += THROTTLE_DELTA * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+        aircraft->throttle -= THROTTLE_DELTA * deltaTime;
+    // clamp throttle
+    aircraft->throttle = glm::clamp(aircraft->throttle, DEFAULT_THROTTLE, MAX_THROTTLE);
 
-    // translate
-    //if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)      instance.position.x -= move;
-    //if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)     instance.position.x += move;
-    //if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)      instance.position.y -= move;
-    //if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)        instance.position.y += move;
-    //if (glfwGetKey(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS) instance.position.z -= move;
-    //if (glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS)   instance.position.z += move;
+    // reset so nose up / down only happens when a key is pressed
+    aircraft->elevator = DEFAULT_ELEVATOR;
 
-    // rotate
-    //if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) // LEFT ROLL
-    //    RotateSelectedAroundWorldAxis(instances, selected, -turn, vec3(0.0f, 1.0f, 0.0f));
-    //if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) // RIGHT ROLL
-    //    RotateSelectedAroundWorldAxis(instances, selected, turn, vec3(0.0f, 1.0f, 0.0f));
-    //if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) // ENGINE ON / SPEED / TORQUE
-    //    RotateSelectedAroundWorldAxis(instances, selected, -turn, vec3(1.0f, 0.0f, 0.0f));
-    //if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) // BRAKES
-    //   RotateSelectedAroundWorldAxis(instances, selected,  turn, vec3(1.0f, 0.0f, 0.0f));
-    //if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-    //    RotateSelectedAroundWorldAxis(instances, selected,  turn, vec3(0.0f, 0.0f, 1.0f));
-    //if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
-    //    RotateSelectedAroundWorldAxis(instances, selected, -turn, vec3(0.0f, 0.0f, 1.0f));
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) // yoke forward / nose down
+        aircraft->elevator -= ELEVATOR_DELTA;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) // yoke backward / nose up
+        aircraft->elevator += ELEVATOR_DELTA;
 }
 
 
@@ -233,12 +269,12 @@ int RunSimulator(GLFWwindow *window) {
     glfwSetInputMode(window, GLFW_STICKY_KEYS, GL_TRUE);
 
     // Clear background
-    glClearColor(0.0f, 0.0f, 0.00f, 0.0f);
+    glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
 
     const vector<std::string> paths = {
         "assets/objects/Runway/Runway.obj",
         "assets/objects/Cessna172SP/Cessna172SP.obj",
-        "assets/objects/Cessna172SP/Cessna172SP-Parked.obj",
+        //"assets/objects/Cessna172SP/Cessna172SP-Parked.obj",
     };
 
     vector<obj_t> objects;
@@ -262,6 +298,11 @@ int RunSimulator(GLFWwindow *window) {
     Viewport viewport;
     Aircraft aircraft;
     PointLight light;
+
+    aircraft.position   = AIRCRAFT_START_POSITION;
+    light.position      = vec3(100.0f, 400.0f, -1100.f);
+    light.attenuation   = vec3(1.0f, 0.0f, 0.0f);
+
     SimulatorState state { &viewport, &camera, &scene, &light, &aircraft };
 
     glfwSetWindowUserPointer(window, &state);
@@ -297,13 +338,27 @@ int RunSimulator(GLFWwindow *window) {
 
         // looking for events (calls the callbacks)
         glfwPollEvents();
-        // keys held down
-        processKeyboard(window, deltaTime);
+
+        // if autopilot then we need to act on behalf of processing keys
+        // a simple key press can still disable autopilot to get back in control
+        if (state.automaticTakeOff) {
+            AutoTakeOff(aircraft);
+        } else {
+            // keys held down
+            processKeyboard(window, deltaTime);
+        }
+
+        // update the aircraft
+        UpdateAircraft(aircraft, deltaTime);
+        // update the scene
+        updateScene(state);
+
         // drawing callback
         drawResult = draw(state, error);
         if (drawResult == -1) {
             break;
         }
+
         // Swap buffers
         glfwSwapBuffers(window);
 
@@ -353,6 +408,13 @@ static bool transferDataToGPUMemory(SimulatorState& state, const vector<obj_t> &
         instances.push_back(Instance(i));
     }
 
+    // 1 unit = 1 m: the runway file is 2x too big, the Cessna 3x too small. The Cessna's
+    // pivot is where its main wheels touch the ground, so its position is that contact
+    // point and pitching tilts it about the main wheels, like a real rotation
+    models[RUNWAY].fit      = scale(mat4(1.0f), vec3(0.5f));
+    models[AIRCRAFT].fit    = scale(mat4(1.0f), vec3(3.0f))
+                            * translate(mat4(1.0f), -vec3(0.0f, 0.005f, 0.42f));
+
     return true;
 }
 
@@ -378,6 +440,44 @@ void cleanupDataFromGPU(SimulatorState& state) {
     }
 }
 
+/*
+    We have to update the scene after processing events.
+    The plane instance position and orientation can change,
+    and with it so does the camera.
+*/
+void updateScene(SimulatorState& state) {
+    Scene* scene = state.scene;
+    Camera* camera = state.camera;
+    Aircraft* aircraft = state.aircraft;
+
+    if (scene == nullptr || camera == nullptr
+        || aircraft == nullptr) return;
+
+    Instance& plane = scene->instances[AIRCRAFT];
+    plane.position = aircraft->position;
+    plane.orientation = angleAxis(-aircraft->pitch, vec3(1.0f, 0.0f, 0.0f));
+
+    // behind (-Z) and above the plane, looking at its cabin
+    camera->target      = aircraft->position + vec3(0.0f, 1.5f, 0.0f);
+
+    // if we simply did this it would be like moving the camera sideways and up on a flat wall
+    // the wall stays `cameraDistance` behind the aircraft, so the distance would then be
+    // sqrt(d^2, x^2, y^2) and it would grow further out as we try to rotate
+    //camera->position    = aircraft->position + vec3(0.0f, 3.0f, -state.cameraDistance);
+    //camera->position.x  += state.cameraYaw;
+    //camera->position.y  += state.cameraPitch;
+
+    // the position then becomes an offset from the target
+                // around the plane
+    vec3 offset(state.cameraDistance * cos(state.cameraPitch) * sin(state.cameraYaw),
+                // up
+                state.cameraDistance * sin(state.cameraPitch),
+                // behind: the nose points +Z
+            -state.cameraDistance * cos(state.cameraPitch) * cos(state.cameraYaw));
+    camera->target   = aircraft->position + vec3(0.0f, 1.5f, 0.0f);
+    camera->position = camera->target + offset;
+}
+
 
 // --------------------------------------------------------------------------------
 /*
@@ -396,14 +496,17 @@ static int draw(SimulatorState& state, std::string& error) {
     PointLight* light = state.light;
     Aircraft* aircraft = state.aircraft;
 
+    if (scene == nullptr || viewport == nullptr || camera == nullptr
+        || light == nullptr || aircraft == nullptr) return -2;
+
     // Clear the screen
     // not clearing the depth buffer can make back faces end up drawn over front ones and things will look inside out
-    glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+    glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT  );
 
     // camera: projection uses the current aspect ratio, so resizing doesn't stretch the scene
     float aspect = viewport->framebuffer_height > 0 ?
         (float)viewport->framebuffer_width /(float)viewport->framebuffer_height : 1.0f;
-    mat4 projection = perspective(radians(45.0f), aspect, 0.1f, 100.0f);
+    mat4 projection = perspective(radians(45.0f), aspect, 0.5f, 15000.0f);
     mat4 view = lookAt(camera->position, camera->target, vec3(0.0f, 1.0f, 0.0f));
 
     // --- meshes: Phong shading ---
