@@ -17,20 +17,12 @@
 using namespace std;
 
 // Include OpenGL related headers
-#include <glm/glm.hpp>                  // GLM header file
-#include <glm/gtc/matrix_transform.hpp> // GLM matrix transform ops
-#include <glm/gtc/matrix_inverse.hpp>   // GLM inverseTranspose
-#include <glm/gtc/type_ptr.hpp>         // GLM type pointers
 #include <GL/glew.h>                    // GLEW header file
 #include <GLFW/glfw3.h>                 // GLFW header file
 
-using namespace glm;
-
 // Our own header files
-#include <common/objloader.hpp>         // very tiny OBJ loader header file
 #include <common/viewer.hpp>            // very tiny OBJ viewer header file
 #include <common/simulator.hpp>         // very tiny simulator header file
-#include <common/shader.hpp>            // GLSL shader header file
 
 // Global constants
 const GLint WINDOW_WIDTH = 800;
@@ -51,8 +43,6 @@ int main(int argc, char *argv[] )
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // To make MacOS happy; should not be needed
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    // enable depth testing
-    glEnable(GL_DEPTH_TEST);
 
     const char *windowName = argc > 1 ? "Mesh Renderer" : "Flight Simulator";
     // Open a window

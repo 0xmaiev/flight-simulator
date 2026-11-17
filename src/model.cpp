@@ -82,6 +82,67 @@ GLuint LoadTexture(const string &path, TextureCache *cache) {
 }
 
 /*
+    Attempts to load a cube map stored as a 4x3 horizontal cross:
+            [+Y]
+      [-X]  [+Z]  [+X]  [-Z]
+            [-Y]
+*/
+GLuint LoadCubemapCross(const std::string &path, TextureCache *cache) {
+    // already loaded (or already failed) - share it
+    TextureCache::iterator it = cache->find(path);
+    if (it != cache->end()) {
+        return it->second;
+    }
+
+    fprintf(stdout, "loading cross cubemap: %s\n", path.c_str());
+    // cube map faces are expected top row first, and LoadTexture turns
+    // the (global) flip on for everything loaded after it
+    stbi_set_flip_vertically_on_load(0);
+
+    int width, height, channels;
+    unsigned char *data = stbi_load(path.c_str(), &width, &height, &channels, 4);
+    if (!data) {
+        fprintf(stderr, "failed to load cube map %s: %s\n", path.c_str(), stbi_failure_reason());
+        return 0;
+    }
+
+    // (column, row) of each face in the cross, in GL's face order: +X, -X, +Y, -Y, +Z, -Z
+    const int cells[6][2] = { {2, 1}, {0, 1}, {1, 0}, {1, 2}, {1, 1}, {3, 1} };
+    int size = width / 4;
+
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
+    // upload each face straight out of the big image: rows in memory are `width`
+    // pixels long, and the face starts SKIP_PIXELS across and SKIP_ROWS down
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
+    for (int i = 0; i < 6; i++) {
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, cells[i][0] * size);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, cells[i][1] * size);
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA8, size, size, 0,
+            GL_RGBA, GL_UNSIGNED_BYTE, data);
+    }
+    // back to the defaults, or every later texture upload is read wrong
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+
+    // the sky is only ever magnified, so no mipmaps; clamp at the face edges
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+
+    stbi_image_free(data);
+    
+    fprintf(stdout, "loaded cross cubemap: %dx%d, %d channels\n", width, height, channels);
+    (*cache)[path] = texture;
+    return texture;
+}
+
+/*
     Deletes every texture in the cache and empties it.
 */
 void DeleteTextures(TextureCache *cache) {

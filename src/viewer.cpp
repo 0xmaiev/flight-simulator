@@ -62,7 +62,7 @@ struct ViewerState {
     double lastCursorY  = 0.0;
 
     ViewerState(Viewport* vp, Camera* camera, Scene* scene, PointLight* light): 
-        viewport(viewport),
+        viewport(vp),
         camera(camera),
         scene(scene),
         light(light)
@@ -111,6 +111,8 @@ int RunViewer(GLFWwindow* window, const char *path) {
     glfwSetScrollCallback(window, scrollCallback);
     // Ensure we can capture the escape key being pressed below
     glfwSetInputMode(window, GLFW_STICKY_KEYS, GL_TRUE);
+    // enable depth testing
+    glEnable(GL_DEPTH_TEST);
 
     // Blue background
     glClearColor(0.0f, 0.0f, 0.15f, 0.0f);

@@ -84,6 +84,14 @@ typedef std::vector<Model> Models;
 GLuint LoadTexture(const string &path, TextureCache *cache);
 
 /*
+    Attempts to load a cube map stored as a 4x3 horizontal cross:
+            [+Y]
+      [-X]  [+Z]  [+X]  [-Z]
+            [-Y]
+*/
+GLuint LoadCubemapCross(const std::string &path, TextureCache *cache);
+
+/*
     Deletes every texture in the cache and empties it.
 */
 void DeleteTextures(TextureCache *cache);

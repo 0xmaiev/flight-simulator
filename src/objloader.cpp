@@ -5,6 +5,7 @@
     https://www.di.ubi.pt/~agomes/cg/assignments/02-assignment.pdf
     https://www.fileformat.info/format/wavefrontobj/egff.htm
 	https://www.fileformat.info/format/material/
+    https://github.com/tinyobjloader/tinyobjloader/
 
     Author: Hugo Carvalho <a36295@ubi.pt>
     Email: hugo.carvalho@ubi.pt

@@ -3,6 +3,7 @@
 
     Source material used as reference:
     https://www.jakobmaier.at/posts/flight-simulation/
+    https://www.programmingcreatively.com/opengl-tutorial-11-qs.php
 
     Author: Hugo Carvalho <a36295@ubi.pt>
     Email: hugo.carvalho@ubi.pt
@@ -35,6 +36,69 @@ using namespace glm;
 #include <common/shader.hpp>            // GLSL shader header file
 #include <common/helpers.hpp>           // reusable helpers between OBJ viewer and simulator
 
+// object paths
+const vector<std::string> objectPaths = {
+    "assets/objects/Runway/Runway.obj",
+    "assets/objects/Cessna172SP/Cessna172SP.obj",
+};
+
+// skybox paths
+const vector<std::string> skyboxPaths = {
+    "assets/cubemaps/Cloudy/Cubemap_Sky_01-512x512.png",
+    "assets/cubemaps/Cloudy/Cubemap_Sky_02-512x512.png",
+    "assets/cubemaps/Cloudy/Cubemap_Sky_04-512x512.png",
+    "assets/cubemaps/Cloudy/Cubemap_Sky_16-512x512.png",
+    "assets/cubemaps/Cloudy/Cubemap_Sky_22-512x512.png",
+};
+
+// positions for the skybox VAO
+float skyboxVertices[] = {
+    -1.0f,  1.0f, -1.0f,
+    -1.0f, -1.0f, -1.0f,
+     1.0f, -1.0f, -1.0f,
+     1.0f, -1.0f, -1.0f,
+     1.0f,  1.0f, -1.0f,
+    -1.0f,  1.0f, -1.0f,
+
+    -1.0f, -1.0f,  1.0f,
+    -1.0f, -1.0f, -1.0f,
+    -1.0f,  1.0f, -1.0f,
+    -1.0f,  1.0f, -1.0f,
+    -1.0f,  1.0f,  1.0f,
+    -1.0f, -1.0f,  1.0f,
+
+     1.0f, -1.0f, -1.0f,
+     1.0f, -1.0f,  1.0f,
+     1.0f,  1.0f,  1.0f,
+     1.0f,  1.0f,  1.0f,
+     1.0f,  1.0f, -1.0f,
+     1.0f, -1.0f, -1.0f,
+
+    -1.0f, -1.0f,  1.0f,
+    -1.0f,  1.0f,  1.0f,
+     1.0f,  1.0f,  1.0f,
+     1.0f,  1.0f,  1.0f,
+     1.0f, -1.0f,  1.0f,
+    -1.0f, -1.0f,  1.0f,
+
+    -1.0f,  1.0f, -1.0f,
+     1.0f,  1.0f, -1.0f,
+     1.0f,  1.0f,  1.0f,
+     1.0f,  1.0f,  1.0f,
+    -1.0f,  1.0f,  1.0f,
+    -1.0f,  1.0f, -1.0f,
+
+    -1.0f, -1.0f, -1.0f,
+    -1.0f, -1.0f,  1.0f,
+     1.0f, -1.0f, -1.0f,
+     1.0f, -1.0f, -1.0f,
+    -1.0f, -1.0f,  1.0f,
+     1.0f, -1.0f,  1.0f
+};
+
+static const float DEFAULT_TIME_MUL         = 1.0f;
+static const float TIME_MULTIPLIER_DELTA    = 0.5f;
+
 struct SimulatorState {
     Viewport* viewport;
     Camera* camera;
@@ -42,16 +106,23 @@ struct SimulatorState {
     PointLight* light;
     Aircraft* aircraft;
 
-    bool automaticTakeOff   = false;    // automatic takeoff procedure
+    int selectedSkyboxIdx       = 0; // skybox index
+    std::string activeSkybox   = "";
+    GLuint skyboxVao            = 0;
+    GLuint skyboxVbo            = 0;
 
-    bool orbiting           = false;    // left mouse button held
+    bool logDebug               = false;    // log debug messages
+    bool automaticTakeOff       = false;    // automatic takeoff procedure
+    bool orbiting               = false;    // left mouse button held
     
-    double lastCursorX      = 0.0;
-    double lastCursorY      = 0.0;
+    float timeMultiplier        = DEFAULT_TIME_MUL; // multiplier to "fast forward" time
 
-    double cameraYaw        = 0.0;      // horizontal / x
-    double cameraPitch      = 0.1;      // vertical / y - initially slightly above plane
-    double cameraDistance   = 15.0;     // distance / z - initially behind plane
+    double lastCursorX          = 0.0;
+    double lastCursorY          = 0.0;
+
+    double cameraYaw            = 0.0;      // horizontal / x
+    double cameraPitch          = 0.1;      // vertical / y - initially slightly above plane
+    double cameraDistance       = 15.0;     // distance / z - initially behind plane
 
     SimulatorState(Viewport* vp, Camera* camera, Scene* scene,
         PointLight* light, Aircraft* aircraft): 
@@ -66,16 +137,29 @@ struct SimulatorState {
 enum {
     RUNWAY,
     AIRCRAFT,
+    TERMINAL,
     PARKED_AIRCRAFT
 };
 
 // scene
 static const glm::vec3 AIRCRAFT_START_POSITION = vec3(0.0f, 0.0f, -1230.0f);
 
+// a left-hand circuit back onto the same runway (x -30..30, z -1830..1830): upwind along +Z,
+// crosswind to +X, downwind along -Z, base back to the centreline, then 1500 m of final
+// down a 3 degree glide path (1500 * tan(3) = 79 m high where it starts)
+static const std::vector<Waypoint> CIRCUIT = {
+    {"takeoff",   AIRCRAFT_START_POSITION,          35.0f},
+    {"upwind",    vec3(   0.0f, 120.0f,   300.0f), 35.0f},
+    {"crosswind", vec3( 800.0f, 120.0f,   300.0f), 35.0f},
+    {"downwind",  vec3( 800.0f, 120.0f, -3000.0f), 35.0f},
+    {"base",      vec3(   0.0f,  79.0f, -3000.0f), 33.0f},
+    {"final",     vec3(   0.0f,   0.0f, -1500.0f), 32.0f},
+};
+
 // controls
 static const float KEY_MOVE_SPEED           = 1.5f;     // world units per second
 static const float KEY_ROTATE_SPEED         = 1.5f;     // radians per second
-static const float MOUSE_ROTATE_SPEED       = 1.0f;     // radians per pixel
+static const float MOUSE_ROTATE_SPEED       = 0.5f;     // radians per pixel
 static const float MOUSE_MOVE_SPEED         = 0.005f;   // world units per pixel
 static const float SCROLL_MOVE_SPEED        = 0.2f;     // world units per scroll step
 
@@ -83,12 +167,17 @@ static const float SCROLL_MOVE_SPEED        = 0.2f;     // world units per scrol
 static const float MAX_THROTTLE             = 1.0f;
 static const float THROTTLE_DELTA           = 0.5f;
 static const float DEFAULT_THROTTLE         = 0.0f;
+// elevator
 static const float ELEVATOR_DELTA           = 1.0f;
 static const float DEFAULT_ELEVATOR         = 0.0f;
+// turn
+static const float TURN_DELTA               = 1.0f;
+static const float DEFAULT_TURN             = 0.0f;
 
 // camera pitch
 static const double MIN_CAMERA_PITCH        = 0.01f;    // radians
 static const double MAX_CAMERA_PITCH        = 1.45f;    // radians
+
 
 
 // --------------------------------------------------------------------------------
@@ -148,6 +237,10 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
     if (action != GLFW_PRESS) return;
 
     switch (key) {
+        case GLFW_KEY_L: {
+            state->logDebug = !state->logDebug;
+            break;
+        }
         case GLFW_KEY_B: {
             aircraft->brakes = !aircraft->brakes;
             fprintf(stdout, "aircraft brakes: %s\n", aircraft->brakes ? "true" : "false");
@@ -159,11 +252,31 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
             aircraft->position = AIRCRAFT_START_POSITION;
             break;
         }
+        case GLFW_KEY_P: {
+            if (state->selectedSkyboxIdx == skyboxPaths.size() - 1) {
+                state->selectedSkyboxIdx = 0;
+            } else {
+                state->selectedSkyboxIdx += 1;
+            }
+            state->activeSkybox = skyboxPaths[state->selectedSkyboxIdx];
+            break;
+        }
         case GLFW_KEY_T: {
             // automatic take off
             state->automaticTakeOff = !state->automaticTakeOff;
             fprintf(stdout, "automatic takeoff procedure: %s\n",
                 state->automaticTakeOff ? "true" : "false");
+            break;
+        }
+        case GLFW_KEY_RIGHT_SHIFT: {
+            state->timeMultiplier = state->timeMultiplier 
+                + (state->timeMultiplier * TIME_MULTIPLIER_DELTA); // fast forward time
+            fprintf(stdout, "time multiplier: %.1f", state->timeMultiplier);
+            break;
+        }
+        case GLFW_KEY_LEFT_SHIFT: {
+            state->timeMultiplier = DEFAULT_TIME_MUL; // reset time
+            fprintf(stdout, "time multiplier reset");
             break;
         }
     }
@@ -236,19 +349,25 @@ static void processKeyboard(GLFWwindow *window, float deltaTime) {
     if (aircraft == nullptr) return;
 
     if (glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS)
-        aircraft->throttle += THROTTLE_DELTA * deltaTime;
+        aircraft->throttle += THROTTLE_DELTA * deltaTime; // more throttle
     if (glfwGetKey(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS)
-        aircraft->throttle -= THROTTLE_DELTA * deltaTime;
+        aircraft->throttle -= THROTTLE_DELTA * deltaTime; // less throttle
     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-        aircraft->throttle += THROTTLE_DELTA * deltaTime;
+        aircraft->throttle += THROTTLE_DELTA * deltaTime; // more throttle
     if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-        aircraft->throttle -= THROTTLE_DELTA * deltaTime;
+        aircraft->throttle -= THROTTLE_DELTA * deltaTime; // less throttle
+
     // clamp throttle
     aircraft->throttle = glm::clamp(aircraft->throttle, DEFAULT_THROTTLE, MAX_THROTTLE);
 
     // reset so nose up / down only happens when a key is pressed
     aircraft->elevator = DEFAULT_ELEVATOR;
+    aircraft->steering = DEFAULT_TURN;
 
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) // left
+        aircraft->steering -= TURN_DELTA;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) // right
+        aircraft->steering += TURN_DELTA;
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) // yoke forward / nose down
         aircraft->elevator -= ELEVATOR_DELTA;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) // yoke backward / nose up
@@ -271,15 +390,10 @@ int RunSimulator(GLFWwindow *window) {
     // Clear background
     glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
 
-    const vector<std::string> paths = {
-        "assets/objects/Runway/Runway.obj",
-        "assets/objects/Cessna172SP/Cessna172SP.obj",
-        //"assets/objects/Cessna172SP/Cessna172SP-Parked.obj",
-    };
-
+    // object paths and loading 
     vector<obj_t> objects;
 
-    for (std::string path : paths) {
+    for (std::string path : objectPaths) {
         obj_t obj;
 
         // load table object
@@ -303,7 +417,17 @@ int RunSimulator(GLFWwindow *window) {
     light.position      = vec3(100.0f, 400.0f, -1100.f);
     light.attenuation   = vec3(1.0f, 0.0f, 0.0f);
 
+    // skybox paths and loading 
+    for (std::string path : skyboxPaths) {
+        // load cubemap
+        if ( !LoadCubemapCross(path.c_str(), &scene.textures) ) {
+            fprintf(stderr, "failed to load obj\n");
+            return 1;
+        }
+    }
+
     SimulatorState state { &viewport, &camera, &scene, &light, &aircraft };
+    state.activeSkybox = skyboxPaths[state.selectedSkyboxIdx];
 
     glfwSetWindowUserPointer(window, &state);
 
@@ -324,17 +448,35 @@ int RunSimulator(GLFWwindow *window) {
     glViewport(0, 0, viewport.framebuffer_width, viewport.framebuffer_height);
 
     fprintf(stdout,
-        "\ncontrols:\n");
+        "\ncontrols:\n"
+        "  left mouse drag      camera orbit aircraft\n"
+        "  PAGE / ARROW UP      throttle on\n"
+        "  PAGE / ARROW DOWN    throttle off\n"
+        "  LEFT SHIFT           reset time\n"
+        "  RIGHT SHIFT          fast forward time\n"
+        "  W                    yoke forward / nose down\n"
+        "  S                    yoke backward / nose up\n"
+        "  T                    automatic take off\n"
+        "  R                    reset aircraft position\n"
+        "  P                    change skybox\n"
+        "  L                    toggle log debug messages\n"
+        "  Esc                  quit\n");
 
     double lastTime = glfwGetTime();
     int drawResult;
+    Route route;
+    route.waypoints = CIRCUIT;
 
     // render scene for each frame
     do {
         // time since the last frame, so key movement speed doesn't depend on the frame rate
         double now = glfwGetTime();
-        float deltaTime = (float)(now - lastTime);
+        float deltaTime = ((float)(now - lastTime) * state.timeMultiplier);
         lastTime = now;
+
+        if (state.logDebug) {
+            fprintf(stdout, "%.1f fps\n", 1.0f / deltaTime);
+        }
 
         // looking for events (calls the callbacks)
         glfwPollEvents();
@@ -342,7 +484,7 @@ int RunSimulator(GLFWwindow *window) {
         // if autopilot then we need to act on behalf of processing keys
         // a simple key press can still disable autopilot to get back in control
         if (state.automaticTakeOff) {
-            AutoTakeOff(aircraft);
+            AutoPilot(aircraft, route);
         } else {
             // keys held down
             processKeyboard(window, deltaTime);
@@ -392,7 +534,22 @@ static bool transferDataToGPUMemory(SimulatorState& state, const vector<obj_t> &
     if (!ret) {
         return false;
     }
+    
+    // skybox VAO/VBO
+    glGenVertexArrays(1, &state.skyboxVao);
+    glBindVertexArray(state.skyboxVao);
 
+    // 1st attribute buffer : vertices
+    glGenBuffers(1, &state.skyboxVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, state.skyboxVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), skyboxVertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(0);
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+    // unbind
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    
     Models& models = state.scene->models;
     Instances& instances = state.scene->instances;
     TextureCache& textures = state.scene->textures;
@@ -455,10 +612,10 @@ void updateScene(SimulatorState& state) {
 
     Instance& plane = scene->instances[AIRCRAFT];
     plane.position = aircraft->position;
-    plane.orientation = angleAxis(-aircraft->pitch, vec3(1.0f, 0.0f, 0.0f));
-
-    // behind (-Z) and above the plane, looking at its cabin
-    camera->target      = aircraft->position + vec3(0.0f, 1.5f, 0.0f);
+    // applied right to left: bank about the nose, pitch about the wings, then heading about world up
+    plane.orientation = angleAxis(aircraft->yaw, vec3(0.0f, 1.0f, 0.0f))
+                      * angleAxis(-aircraft->pitch, vec3(1.0f, 0.0f, 0.0f))
+                      * angleAxis(aircraft->bank, vec3(0.0f, 0.0f, 1.0f));
 
     // if we simply did this it would be like moving the camera sideways and up on a flat wall
     // the wall stays `cameraDistance` behind the aircraft, so the distance would then be
@@ -476,6 +633,8 @@ void updateScene(SimulatorState& state) {
             -state.cameraDistance * cos(state.cameraPitch) * cos(state.cameraYaw));
     camera->target   = aircraft->position + vec3(0.0f, 1.5f, 0.0f);
     camera->position = camera->target + offset;
+    // the orbit is measured from behind the aircraft, so it turns with it (but doesn't bank)
+    camera->position = camera->target + angleAxis(aircraft->yaw, vec3(0.0f, 1.0f, 0.0f)) * offset;
 }
 
 
@@ -485,8 +644,11 @@ void updateScene(SimulatorState& state) {
 */
 static int draw(SimulatorState& state, std::string& error) {
     const GLuint phongProgramID = GetShader("phong");
-    if (phongProgramID == 0) {
-        error += "shader not found: phong";
+    const GLuint skyboxProgramID = GetShader("skybox");
+    if (phongProgramID == 0 || skyboxProgramID == 0) {
+        error += "shader not found: ";
+        error += phongProgramID == 0 ? "phong " : "";
+        error += skyboxProgramID == 0 ? "skybox " : "";
         return -1;
     }
 
@@ -508,7 +670,19 @@ static int draw(SimulatorState& state, std::string& error) {
         (float)viewport->framebuffer_width /(float)viewport->framebuffer_height : 1.0f;
     mat4 projection = perspective(radians(45.0f), aspect, 0.5f, 15000.0f);
     mat4 view = lookAt(camera->position, camera->target, vec3(0.0f, 1.0f, 0.0f));
-
+    
+    // sky first, with depth testing off so everything drawn after covers it
+    glUseProgram(skyboxProgramID);
+    glUniformMatrix4fv(glGetUniformLocation(skyboxProgramID, "view"), 1, GL_FALSE, value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(skyboxProgramID, "projection"), 1, GL_FALSE, value_ptr(projection));
+    glActiveTexture(GL_TEXTURE0);
+    GLuint activeSkybox = scene->textures[state.activeSkybox];
+    glBindTexture(GL_TEXTURE_CUBE_MAP, activeSkybox);
+    glBindVertexArray(state.skyboxVao);
+    glDisable(GL_DEPTH_TEST);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glEnable(GL_DEPTH_TEST);
+    
     // --- meshes: Phong shading ---
     glUseProgram(phongProgramID);
 
